@@ -1,2 +1,2 @@
 # ML-assignment4
-Repository for assignment 4 of our Machine Learning module
+Repository for assignment 4 of the Machine Learning module
