@@ -1,6 +1,7 @@
-"""Entry point: re-scores the k-nearest neighbours and classification tree
-models of assignment 2 on the UNSW-NB15 dataset, on the same five folds, as the
-baseline for the ensemble study.
+"""
+Entry point: tunes a random forest on the UNSW-NB15 network traffic dataset
+and compares it with the k-nearest neighbours and classification tree models of
+assignment 2, on identical cross-validation folds.
 
     python src/main.py
 """
@@ -13,7 +14,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import RobustScaler
 
-import data, experiment, knn_model, tree_model
+import data, experiment, forest_model, knn_model, tree_model
 from progress import Progress, Timer
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +43,7 @@ def parse_args():
                         default=ROOT / "data" / "assignment2_predictions.csv",
                         help="out-of-fold predictions saved by the assignment 2 run")
     parser.add_argument("--folds", default=5, type=int)
+    parser.add_argument("--tune-sample", default=40000, type=int)
     parser.add_argument("--sample", default=0, type=int,
                         help="subsample the whole experiment (for a quick smoke test)")
     parser.add_argument("--refit-knn", action="store_true",
@@ -52,6 +54,9 @@ def parse_args():
 
 
 def saved_knn_predictions(path, y, log):
+    """
+    The assignment 2 kNN predictions,
+    """
 
     if not path.exists():
         log(f"{path} not found; kNN will be refitted", 1)
@@ -76,16 +81,45 @@ def main():
     codes, _ = data.class_labels(y)
     log(f"{len(y)} instances, {X.shape[1]} features, {len(codes)} classes")
 
+    # --- tuning -------- #
+    log.rule("TUNING " + forest_model.NAME)
+    X_tune, y_tune = X, y
+    if args.tune_sample and args.tune_sample < len(y):
+        X_tune, y_tune = data.stratified_sample(X, y, args.tune_sample, args.seed)
+    log(f"tuning on {len(y_tune)} instances (the assignment 2 tuning sample), "
+        f"{args.folds}-fold inner CV", 1)
+
+    params, _ = experiment.tune(forest_model, X_tune, y_tune, args.folds, args.seed, log,
+                                n_jobs=args.jobs)
+
+    log(f"stage {len(forest_model.SEARCH_STAGES) + 1} (Q1: number of trees): "
+        f"growing {max(forest_model.TREE_COUNTS)} trees per fold", 1)
+    inner_curve = experiment.tree_count_curve(
+        forest_model, X_tune, y_tune, params, forest_model.TREE_COUNTS,
+        experiment.make_cv(args.folds, args.seed), log)
+    params["classifier__n_estimators"] = experiment.choose_tree_count(
+        inner_curve, forest_model.PLATEAU_TOLERANCE)
+    log(f"chose n_estimators={params['classifier__n_estimators']}", 2)
+    log(f"selected configuration: {experiment.format_params(params)}", 1)
+
     # --- evaluation -------- #
     log.rule("EVALUATION")
     cv = experiment.make_cv(args.folds, args.seed)
     saved = None if args.refit_knn else saved_knn_predictions(args.a2_predictions, y, log)
+
+    curve_counts = [m for m in forest_model.TREE_COUNTS if m <= params["classifier__n_estimators"]]
+    if params["classifier__n_estimators"] not in curve_counts:
+        curve_counts.append(params["classifier__n_estimators"])
 
     candidates = [
         experiment.Candidate("kNN", knn_model.NAME + " (A2)", knn_model,
                              {**KNN_PARAMS, "classifier__n_jobs": args.jobs},
                              saved_predictions=None if saved is None else saved["kNN"].to_numpy()),
         experiment.Candidate("Tree", tree_model.NAME + " (A2)", tree_model, TREE_PARAMS),
+        experiment.Candidate("RF-untuned", forest_model.NAME + " (untuned)", forest_model,
+                             forest_model.UNTUNED_PARAMS, n_jobs=args.jobs),
+        experiment.Candidate("RF", forest_model.NAME + " (tuned)", forest_model, params,
+                             n_jobs=args.jobs, curve_counts=curve_counts),
     ]
 
     results = {}
@@ -99,7 +133,10 @@ def main():
         log(f"reproduction check: refitted tree agrees with assignment 2 on {agreement:.2%} "
             f"of predictions", 1)
 
-    print(experiment.report(results, args.folds, len(y)))
+    pairs = [("RF", "Tree"), ("RF", "kNN"), ("RF", "RF-untuned")]
+    comparisons = [experiment.compare(results[a], results[b], a, b) for a, b in pairs]
+
+    print(experiment.report(results, comparisons, args.folds, len(y)))
     log(f"total runtime {log.elapsed() / 60:.1f} minutes")
 
 
