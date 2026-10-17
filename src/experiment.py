@@ -12,9 +12,11 @@ from scipy import stats
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
+    confusion_matrix,
     f1_score,
     make_scorer,
     matthews_corrcoef,
+    precision_recall_fscore_support,
     precision_score,
     recall_score,
 )
@@ -237,16 +239,55 @@ def evaluate(candidate, X, y, cv, log):
     }
 
 
-def compare(result_a, result_b, key_a, key_b, metric=PRIMARY_METRIC):
+def per_class_summary(y_true, y_pred, fold_index, codes, names):
     """
-    Paired comparison of two models on the same outer folds, as in assignment 2.
+    Per-class precision, recall and F1: mean and standard deviation over folds.
+    """
+
+    rows = []
+    for fold in range(fold_index.max() + 1):
+        mask = fold_index == fold
+        precision, recall, f1, support = precision_recall_fscore_support(
+            np.asarray(y_true)[mask], y_pred[mask], labels=codes, zero_division=0
+        )
+        for name, p, r, f, s in zip(names, precision, recall, f1, support):
+            rows.append({"class": name, "support": s, "precision": p, "recall": r, "f1": f})
+
+    grouped = pd.DataFrame(rows).groupby("class", sort=False)
+    summary = pd.DataFrame({"support": grouped["support"].sum()})
+    for metric in ["precision", "recall", "f1"]:
+        summary[f"{metric}_mean"] = grouped[metric].mean()
+        summary[f"{metric}_std"] = grouped[metric].std(ddof=1)
+    return summary.reset_index()
+
+
+def top_confusions(confusion, limit=3):
+    rows = []
+    for actual in confusion.index:
+        total = confusion.loc[actual].sum()
+        errors = confusion.loc[actual].drop(actual).sort_values(ascending=False)
+        for predicted, count in errors.head(limit).items():
+            if count > 0:
+                rows.append({"actual": actual, "support": int(total), "predicted_as": predicted,
+                             "count": int(count), "share_of_actual": count / total})
+    return pd.DataFrame(rows)
+
+
+def compare(result_a, result_b, key_a, key_b, n_instances, metric=PRIMARY_METRIC):
+    """
+    Paired comparison of two models on the same outer folds.
     """
 
     a = result_a["scores"][metric].to_numpy()
     b = result_b["scores"][metric].to_numpy()
     difference = a - b
+    k = len(difference)
+    variance = difference.var(ddof=1)
 
     t_stat, t_p = stats.ttest_rel(a, b)
+    n_test = n_instances / k
+    corrected_t = difference.mean() / math.sqrt((1 / k + n_test / (n_instances - n_test)) * variance)
+    corrected_p = 2 * stats.t.sf(abs(corrected_t), df=k - 1)
     pooled = math.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2)
 
     return {
@@ -260,7 +301,59 @@ def compare(result_a, result_b, key_a, key_b, metric=PRIMARY_METRIC):
         "folds_favouring_a": int((difference > 0).sum()),
         "paired_t": t_stat,
         "paired_t_p": t_p,
+        "corrected_t": corrected_t,
+        "corrected_t_p": corrected_p,
     }
+
+
+def finish(results, y, codes, names):
+    """
+    Per-class tables and confusion matrices for every evaluated model.
+    """
+
+    for result in results.values():
+        result["per_class"] = per_class_summary(
+            y, result["predictions"], result["fold_index"], codes, names
+        )
+        result["confusion"] = pd.DataFrame(
+            confusion_matrix(y, result["predictions"], labels=codes), index=names, columns=names
+        )
+        result["confusions"] = top_confusions(result["confusion"])
+
+
+# --- output --------- #
+
+
+def _stack(results, key, index=False):
+    frames = []
+    for name, result in results.items():
+        if result[key].empty:
+            continue
+        frame = result[key].reset_index() if index else result[key].copy()
+        frame.insert(0, "model", name)
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True)
+
+
+def save(results, comparisons, output_dir):
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    _stack(results, "summary", index=True).rename(columns={"index": "metric"}).to_csv(
+        output_dir / "cv_summary.csv", index=False)
+    _stack(results, "scores", index=True).to_csv(output_dir / "cv_folds.csv", index=False)
+    pd.DataFrame(comparisons).to_csv(output_dir / "model_comparison.csv", index=False)
+    _stack(results, "per_class").to_csv(output_dir / "per_class.csv", index=False)
+    _stack(results, "confusions").to_csv(output_dir / "top_confusions.csv", index=False)
+    _stack(results, "confusion", index=True).rename(columns={"index": "actual"}).to_csv(
+        output_dir / "confusion_matrices.csv", index=False)
+    _stack(results, "timing").to_csv(output_dir / "timing.csv", index=False)
+    _stack(results, "curve").to_csv(output_dir / "outer_tree_count.csv", index=False)
+
+    first = next(iter(results.values()))
+    predictions = pd.DataFrame({"fold": first["fold_index"]})
+    for key, result in results.items():
+        predictions[key] = result["predictions"]
+    predictions.to_csv(output_dir / "predictions.csv", index=False)
 
 
 def report(results, comparisons, folds, n_instances):
@@ -285,7 +378,7 @@ def report(results, comparisons, folds, n_instances):
         lines.append(
             f"  {row['model_a'] + ' vs ' + row['model_b']:<22} diff {row['mean_difference']:+.4f}  "
             f"d = {row['cohens_d']:+.2f}  {row['folds_favouring_a']}/{folds} folds  "
-            f"paired p = {row['paired_t_p']:.1e}"
+            f"paired p = {row['paired_t_p']:.1e}  corrected p = {row['corrected_t_p']:.1e}"
         )
     lines.append("=" * 78)
     return "\n".join(lines)
