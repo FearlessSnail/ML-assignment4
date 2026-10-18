@@ -72,6 +72,31 @@ def saved_knn_predictions(path, y, log):
         return None
     return saved
 
+def tune_forest(X, y, args, log, out, metric, suffix=""):
+    """
+    Stages 1-2 (grid search) and stage 3 (number of trees), selecting by
+    metric. Writes the tuning tables and the chosen configuration to out/.
+    """
+
+    params, stages = experiment.tune(forest_model, X, y, args.folds, args.seed, log,
+                                     n_jobs=args.jobs, metric=metric)
+    stages.to_csv(out / f"tuning_stages{suffix}.csv", index=False)
+
+    log(f"stage {len(forest_model.SEARCH_STAGES) + 1} (Q1: number of trees): "
+        f"growing {max(forest_model.TREE_COUNTS)} trees per fold", 1)
+    
+    curve = experiment.tree_count_curve(
+        forest_model, X, y, params, forest_model.TREE_COUNTS,
+        experiment.make_cv(args.folds, args.seed), log)
+    
+    curve.to_csv(out / f"tuning_tree_count{suffix}.csv", index=False)
+    params["classifier__n_estimators"] = experiment.choose_tree_count(
+        curve, forest_model.PLATEAU_TOLERANCE, metric)
+    log(f"chose n_estimators={params['classifier__n_estimators']}", 2)
+    log(f"selected configuration: {experiment.format_params(params)}", 1)
+    (out / f"selected_configuration{suffix}.json").write_text(json.dumps(params, indent=2))
+    return params
+
 
 def main():
     sys.stdout.reconfigure(line_buffering=True)
@@ -118,22 +143,14 @@ def main():
     log(f"tuning on {len(y_tune)} instances (the assignment 2 tuning sample), "
         f"{args.folds}-fold inner CV", 1)
 
-    params, stages = experiment.tune(forest_model, X_tune, y_tune, args.folds, args.seed, log,
-                                     n_jobs=args.jobs)
-    stages.to_csv(out / "tuning_stages.csv", index=False)
+    params = tune_forest(X_tune, y_tune, args, log, out, experiment.PRIMARY_METRIC)
 
-    log(f"stage {len(forest_model.SEARCH_STAGES) + 1} (Q1: number of trees): "
-        f"growing {max(forest_model.TREE_COUNTS)} trees per fold", 1)
-    inner_curve = experiment.tree_count_curve(
-        forest_model, X_tune, y_tune, params, forest_model.TREE_COUNTS,
-        experiment.make_cv(args.folds, args.seed), log)
-    inner_curve.to_csv(out / "tuning_tree_count.csv", index=False)
-
-    params["classifier__n_estimators"] = experiment.choose_tree_count(
-        inner_curve, forest_model.PLATEAU_TOLERANCE)
-    log(f"chose n_estimators={params['classifier__n_estimators']}", 2)
-    log(f"selected configuration: {experiment.format_params(params)}", 1)
-    (out / "selected_configuration.json").write_text(json.dumps(params, indent=2))
+    # Q7: the same search, the same sample and the same folds, selecting by MCC.
+    alternative = forest_model.ALTERNATIVE_METRIC
+    log.rule(f"TUNING {forest_model.NAME} (Q7: selecting by "
+             f"{experiment.METRIC_NAMES[alternative]})")
+    params_alternative = tune_forest(X_tune, y_tune, args, log, out, alternative,
+                                     suffix=f"_{alternative}")
 
     # --- evaluation -------- #
     log.rule("EVALUATION")
@@ -153,6 +170,9 @@ def main():
                              forest_model.UNTUNED_PARAMS, n_jobs=args.jobs),
         experiment.Candidate("RF", forest_model.NAME + " (tuned)", forest_model, params,
                              n_jobs=args.jobs, curve_counts=curve_counts),
+        experiment.Candidate(f"RF-{alternative}", forest_model.NAME + f" (tuned for "
+                             f"{experiment.METRIC_NAMES[alternative]})", forest_model,
+                             params_alternative, n_jobs=args.jobs),
     ]
 
     results = {}
@@ -167,15 +187,21 @@ def main():
             f"of predictions", 1)
 
     experiment.finish(results, y, codes, names)
+
     pairs = [("RF", "Tree"), ("RF", "kNN"), ("RF-untuned", "Tree"), ("RF", "RF-untuned")]
     comparisons = [experiment.compare(results[a], results[b], a, b, len(y)) for a, b in pairs]
+
+    # Q7: each forest against the other, and against the tree, on both objectives.
+    for metric in [experiment.PRIMARY_METRIC, alternative]:
+        for a, b in [(f"RF-{alternative}", "RF"), (f"RF-{alternative}", "Tree")]:
+            comparisons.append(experiment.compare(results[a], results[b], a, b, len(y), metric))
 
     weights = len(y) / (len(codes) * y.value_counts())
     votes = diagnostics.conflict_votes(
         X, y, {key: result["predictions"] for key, result in results.items()}, weights)
     votes.to_csv(out / "conflict_votes.csv", index=False)
 
-
+    # --- mechanisms: why the forest wins (Q5, Q6) ------------ #
     log.rule("MECHANISMS")
     log(f"Q5: bias and variance from {forest_model.VARIANCE_REPEATS} subsamples of "
         f"{forest_model.VARIANCE_FRACTION:.0%} of each outer training fold", 1)
@@ -188,6 +214,13 @@ def main():
     bias_variance.to_csv(out / "bias_variance.csv", index=False)
     bias_variance_classes.to_csv(out / "bias_variance_per_class.csv", index=False)
 
+    log(f"Q6: strength and correlation by features per split "
+        f"({forest_model.STRENGTH_TREES} trees, tuning sample, inner CV)", 1)
+    strength = mechanisms.feature_subset_mechanism(
+        forest_model, X_tune, y_tune, params, forest_model.STRENGTH_FEATURES,
+        forest_model.STRENGTH_TREES, experiment.make_cv(args.folds, args.seed), log,
+        n_jobs=args.jobs)
+    strength.to_csv(out / "strength_correlation.csv", index=False)
 
     log.rule("OUTPUT")
     with Timer(log, "writing tables and figures"):

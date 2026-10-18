@@ -25,6 +25,7 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold
 import data
 
 PRIMARY_METRIC = "f1_macro"
+METRIC_NAMES = {"f1_macro": "macro F1", "mcc": "MCC", "accuracy": "accuracy"}
 
 
 def scorers(codes):
@@ -72,9 +73,9 @@ def format_params(params):
 # ------ tuning ---------------- #
 
 
-def tune(module, X, y, folds, seed, log, n_jobs=-1):
+def tune(module, X, y, folds, seed, log, n_jobs=-1, metric=PRIMARY_METRIC):
     """
-    Staged grid search over module.SEARCH_STAGES.
+    Staged grid search over module.SEARCH_STAGES, selecting by metric.
 
     Each stage fixes the winners of the stages before it. The forests inside the
     search run single-threaded so that the candidates run in parallel instead.
@@ -102,17 +103,18 @@ def tune(module, X, y, folds, seed, log, n_jobs=-1):
         started = time.time()
         search.fit(X, y)
         results = pd.DataFrame(search.cv_results_)
-        best = results[f"mean_test_{PRIMARY_METRIC}"].idxmax()
+        best = results[f"mean_test_{metric}"].idxmax()
         chosen = results.loc[best, "params"]
         params.update(chosen)
 
-        log(f"chose {format_params(chosen)} (macro F1 "
-            f"{results.loc[best, f'mean_test_{PRIMARY_METRIC}']:.4f}, "
+        log(f"chose {format_params(chosen)} ({METRIC_NAMES[metric]} "
+            f"{results.loc[best, f'mean_test_{metric}']:.4f}, "
             f"took {time.time() - started:.0f}s)", 2)
 
         results["stage"] = number
         results["question"] = stage["question"]
-        keep = ["stage", "question"] + [
+        results["objective"] = metric
+        keep = ["stage", "question", "objective"] + [
             c for c in results.columns if c.startswith(("param_", "mean_", "std_"))
         ]
         tables.append(results[keep])
@@ -158,12 +160,12 @@ def tree_count_curve(module, X, y, params, counts, cv, log):
     return pd.DataFrame(rows)
 
 
-def choose_tree_count(curve, tolerance):
+def choose_tree_count(curve, tolerance, metric=PRIMARY_METRIC):
     """
-    The smallest forest whose mean macro F1 is within tolerance of the largest.
+    The smallest forest whose mean score is within tolerance of the largest.
     """
 
-    mean = curve.groupby("trees")[PRIMARY_METRIC].mean()
+    mean = curve.groupby("trees")[metric].mean()
     target = mean.loc[mean.index.max()] - tolerance
     return int(mean[mean >= target].index.min())
 
@@ -373,10 +375,11 @@ def report(results, comparisons, folds, n_instances):
         )
         lines.append(f"{metric:<18}{cells}")
 
-    lines.append("\nPairwise comparisons on macro F1 (positive difference favours the first model)")
+    lines.append("\nPairwise comparisons (positive difference favours the first model)")
     for row in comparisons:
         lines.append(
-            f"  {row['model_a'] + ' vs ' + row['model_b']:<22} diff {row['mean_difference']:+.4f}  "
+            f"  {row['model_a'] + ' vs ' + row['model_b']:<22} {METRIC_NAMES[row['metric']]:<9} "
+            f"diff {row['mean_difference']:+.4f}  "
             f"d = {row['cohens_d']:+.2f}  {row['folds_favouring_a']}/{folds} folds  "
             f"paired p = {row['paired_t_p']:.1e}  corrected p = {row['corrected_t_p']:.1e}"
         )

@@ -333,6 +333,38 @@ def bias_variance(output_dir):
     _save(fig, output_dir, "fig_bias_variance.png")
 
 
+def strength_correlation(output_dir):
+    """
+    Q6: Breiman's strength and correlation, and the resulting macro F1, by the
+    number of features considered at each split.
+    """
+
+    table = pd.read_csv(output_dir / "strength_correlation.csv", keep_default_na=False)
+    order = list(dict.fromkeys(table["max_features"]))
+    stats = table.groupby("max_features").agg(["mean", "std"]).loc[order]
+    x = range(len(order))
+
+    fig, axes = plt.subplots(1, 3, figsize=(10.0, 3.0), layout="constrained")
+    for ax, column, label in [(axes[0], "strength", "strength (mean margin)"),
+                              (axes[1], "correlation", "correlation between trees")]:
+        ax.errorbar(x, stats[(column, "mean")], yerr=stats[(column, "std")], color=SERIES[2],
+                    marker="o", capsize=3)
+        ax.set_ylabel(label)
+
+    axes[2].errorbar(x, stats[("forest_f1_macro", "mean")], yerr=stats[("forest_f1_macro", "std")],
+                     color=SERIES[2], marker="o", capsize=3, label="forest")
+    axes[2].errorbar(x, stats[("tree_f1_macro", "mean")], yerr=stats[("tree_f1_macro", "std")],
+                     color=INK_SECONDARY, marker="o", linestyle="--", capsize=3,
+                     label="single tree (mean)")
+    axes[2].set_ylabel("macro F1")
+    axes[2].legend(loc="lower right")
+    
+    for ax in axes:
+        ax.set_xticks(x, [_feature_label(v) for v in order], fontsize=7)
+        ax.set_xlabel("features considered at each split")
+    _save(fig, output_dir, "fig_strength_correlation.png")
+
+
 def plot_all(output_dir):
     label_conflicts(output_dir)
     tuning_features_and_weights(output_dir)
@@ -343,3 +375,4 @@ def plot_all(output_dir):
     confusion_matrices(output_dir)
     fold_scores(output_dir)
     bias_variance(output_dir)
+    strength_correlation(output_dir)
