@@ -166,6 +166,9 @@ def main():
                              {**KNN_PARAMS, "classifier__n_jobs": args.jobs},
                              saved_predictions=None if saved is None else saved["kNN"].to_numpy()),
         experiment.Candidate("Tree", tree_model.NAME + " (A2)", tree_model, TREE_PARAMS),
+
+        experiment.Candidate("Tree-unpruned", tree_model.NAME + " (unpruned)", tree_model,
+                             {**TREE_PARAMS, "classifier__ccp_alpha": 0.0}),
         experiment.Candidate("RF-untuned", forest_model.NAME + " (untuned)", forest_model,
                              forest_model.UNTUNED_PARAMS, n_jobs=args.jobs),
         experiment.Candidate("RF", forest_model.NAME + " (tuned)", forest_model, params,
@@ -188,13 +191,13 @@ def main():
 
     experiment.finish(results, y, codes, names)
 
-    pairs = [("RF", "Tree"), ("RF", "kNN"), ("RF-untuned", "Tree"), ("RF", "RF-untuned")]
-    comparisons = [experiment.compare(results[a], results[b], a, b, len(y)) for a, b in pairs]
-
-    # Q7: each forest against the other, and against the tree, on both objectives.
-    for metric in [experiment.PRIMARY_METRIC, alternative]:
-        for a, b in [(f"RF-{alternative}", "RF"), (f"RF-{alternative}", "Tree")]:
-            comparisons.append(experiment.compare(results[a], results[b], a, b, len(y), metric))
+    tuned_alternative = f"RF-{alternative}"
+    pairs = [("RF", "Tree"), ("RF", "kNN"), ("RF-untuned", "Tree"), ("RF", "RF-untuned"),
+             ("RF-untuned", "Tree-unpruned"), ("Tree", "Tree-unpruned"), ("RF", "Tree-unpruned"),
+             (tuned_alternative, "RF"), (tuned_alternative, "Tree"),
+             (tuned_alternative, "RF-untuned"), (tuned_alternative, "Tree-unpruned")]
+    comparisons = [experiment.compare(results[a], results[b], a, b, len(y), metric)
+                   for metric in [experiment.PRIMARY_METRIC, alternative] for a, b in pairs]
 
     weights = len(y) / (len(codes) * y.value_counts())
     votes = diagnostics.conflict_votes(
@@ -205,8 +208,8 @@ def main():
     log.rule("MECHANISMS")
     log(f"Q5: bias and variance from {forest_model.VARIANCE_REPEATS} subsamples of "
         f"{forest_model.VARIANCE_FRACTION:.0%} of each outer training fold", 1)
-    decomposed = [c for c in candidates if c.key in ("Tree", "RF-untuned", "RF")]
     
+    decomposed = [c for c in candidates if c.key in ("Tree-unpruned", "Tree", "RF-untuned", "RF")]
     bias_variance, bias_variance_classes = mechanisms.bias_variance(
         decomposed, X, y, cv, forest_model.VARIANCE_REPEATS, forest_model.VARIANCE_FRACTION,
         args.seed, log)

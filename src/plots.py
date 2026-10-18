@@ -21,15 +21,19 @@ SEQUENTIAL = LinearSegmentedColormap.from_list(
     "blue", ["#fcfcfb", "#cde2fb", "#86b6ef", "#3987e5", "#256abf", "#104281", "#0d366b"]
 )
 
+SERIES = SERIES + ["#eda100"]
+MODEL_COLOURS = {"kNN": SERIES[0], "Tree": SERIES[1], "RF": SERIES[2], "RF-mcc": SERIES[3]}
+# loss, bias and variance: one neutral and two steps of the sequential blue.
 DECOMPOSITION_COLOURS = {"loss": "#a3a29c", "bias": "#104281", "variance": "#86b6ef"}
 
-MODEL_COLOURS = {"kNN": SERIES[0], "Tree": SERIES[1], "RF": SERIES[2]}
 WEIGHT_COLOURS = {"none": SERIES[0], "balanced": SERIES[1], "balanced_subsample": SERIES[2]}
 MODEL_NAMES = {
     "kNN": "k-nearest neighbours (A2)",
     "Tree": "Classification tree (A2)",
+    "Tree-unpruned": "Classification tree, unpruned",
     "RF-untuned": "Random forest, untuned",
     "RF": "Random forest, tuned",
+    "RF-mcc": "Random forest, tuned for MCC",
 }
 
 plt.rcParams.update({
@@ -286,10 +290,11 @@ def fold_scores(output_dir):
     """
 
     folds = pd.read_csv(output_dir / "cv_folds.csv")
-    keys = [k for k in ["kNN", "Tree", "RF-untuned", "RF"] if k in set(folds["model"])]
+    keys = [k for k in ["kNN", "Tree-unpruned", "Tree", "RF-untuned", "RF", "RF-mcc"]
+            if k in set(folds["model"])]
     table = folds.pivot(index="fold", columns="model", values="f1_macro")[keys]
 
-    fig, ax = plt.subplots(figsize=(6.0, 3.2))
+    fig, ax = plt.subplots(figsize=(1.5 * len(keys), 3.2))
     for _, row in table.iterrows():
         ax.plot(range(len(keys)), row.to_numpy(), color=GRID, linewidth=1, zorder=1)
     for position, key in enumerate(keys):
@@ -298,8 +303,8 @@ def fold_scores(output_dir):
         ax.annotate(f"{table[key].mean():.4f}", (position, table[key].max()), xytext=(0, 8),
                     textcoords="offset points", ha="center", fontsize=8, color=INK)
 
-    ax.set_xticks(range(len(keys)), [MODEL_NAMES[k].replace(", ", "\n").replace(" (", "\n(")
-                                     for k in keys])
+    ax.set_xticks(range(len(keys)), [MODEL_NAMES[k].replace("Classification tree", "Tree").replace(
+        "Random forest", "Forest").replace(", ", "\n").replace(" (", "\n(") for k in keys])
     ax.set_ylabel("macro F1 per outer fold")
     ax.grid(axis="x", visible=False)
     _save(fig, output_dir, "fig_fold_scores.png")
@@ -312,19 +317,19 @@ def bias_variance(output_dir):
     """
 
     table = pd.read_csv(output_dir / "bias_variance.csv")
-    keys = [k for k in ["Tree", "RF-untuned", "RF"] if k in set(table["model"])]
+    keys = [k for k in ["Tree-unpruned", "Tree", "RF-untuned", "RF"] if k in set(table["model"])]
     parts = ["loss", "bias", "variance"]
     width = 0.8 / len(parts)
 
-    fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.2), sharey=True, layout="constrained")
+    fig, axes = plt.subplots(1, 2, figsize=(10.0, 3.2), sharey=True, layout="constrained")
     for ax, scope in zip(axes, ["all rows", "class average"]):
         stats = table[table["scope"] == scope].groupby("model")[parts].agg(["mean", "std"])
         for offset, part in enumerate(parts):
             ax.bar(np.arange(len(keys)) + (offset - 1) * width, stats.loc[keys, (part, "mean")],
                    width=width * 0.92, yerr=stats.loc[keys, (part, "std")], capsize=2,
                    error_kw={"linewidth": 0.8}, color=DECOMPOSITION_COLOURS[part], label=part)
-        ax.set_xticks(range(len(keys)), [MODEL_NAMES[k].replace(", ", "\n").replace(" (", "\n(")
-                                         for k in keys])
+        ax.set_xticks(range(len(keys)), [MODEL_NAMES[k].replace("Classification tree", "Tree").replace(
+            "Random forest", "Forest").replace(", ", "\n").replace(" (", "\n(") for k in keys])
         ax.set_title(f"{scope} ({'like accuracy' if scope == 'all rows' else 'like macro F1'})",
                      fontsize=9, color=INK)
         ax.grid(axis="x", visible=False)
@@ -365,6 +370,32 @@ def strength_correlation(output_dir):
     _save(fig, output_dir, "fig_strength_correlation.png")
 
 
+def objective(output_dir):
+    """
+    Q7: per-class F1 of the forest tuned for macro F1 against the one tuned for MCC.
+    """
+
+    per_class = pd.read_csv(output_dir / "per_class.csv")
+    keys = [k for k in ["RF", "RF-mcc"] if k in set(per_class["model"])]
+    order = _class_order(per_class)
+    width = 0.8 / len(keys)
+
+    fig, ax = plt.subplots(figsize=(8.4, 3.0))
+    for offset, key in enumerate(keys):
+        frame = per_class[per_class["model"] == key].set_index("class").loc[order]
+        ax.bar(np.arange(len(order)) + (offset - (len(keys) - 1) / 2) * width, frame["f1_mean"],
+               width=width * 0.92, yerr=frame["f1_std"], capsize=2, error_kw={"linewidth": 0.8},
+               color=MODEL_COLOURS[key], label=MODEL_NAMES[key].replace("tuned", "tuned for macro F1")
+               if key == "RF" else MODEL_NAMES[key])
+        
+    ax.set_xticks(range(len(order)), order, rotation=35, ha="right")
+    ax.set_ylabel("F1 score")
+    ax.set_ylim(0, 1.05)
+    ax.legend(ncol=2, loc="lower center", bbox_to_anchor=(0.5, 1.0), fontsize=8)
+    ax.grid(axis="x", visible=False)
+    _save(fig, output_dir, "fig_objective.png")
+
+
 def plot_all(output_dir):
     label_conflicts(output_dir)
     tuning_features_and_weights(output_dir)
@@ -376,3 +407,4 @@ def plot_all(output_dir):
     fold_scores(output_dir)
     bias_variance(output_dir)
     strength_correlation(output_dir)
+    objective(output_dir)
