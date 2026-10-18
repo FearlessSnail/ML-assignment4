@@ -71,3 +71,10 @@ UNTUNED_PARAMS = {
     "classifier__class_weight": None,
     "classifier__criterion": "gini",
 }
+
+
+VARIANCE_REPEATS = 10
+VARIANCE_FRACTION = 0.5
+
+STRENGTH_FEATURES = [1, "sqrt", 0.25, 0.5, None]
+STRENGTH_TREES = 100

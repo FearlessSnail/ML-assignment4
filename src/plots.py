@@ -21,6 +21,8 @@ SEQUENTIAL = LinearSegmentedColormap.from_list(
     "blue", ["#fcfcfb", "#cde2fb", "#86b6ef", "#3987e5", "#256abf", "#104281", "#0d366b"]
 )
 
+DECOMPOSITION_COLOURS = {"loss": "#a3a29c", "bias": "#104281", "variance": "#86b6ef"}
+
 MODEL_COLOURS = {"kNN": SERIES[0], "Tree": SERIES[1], "RF": SERIES[2]}
 WEIGHT_COLOURS = {"none": SERIES[0], "balanced": SERIES[1], "balanced_subsample": SERIES[2]}
 MODEL_NAMES = {
@@ -303,6 +305,34 @@ def fold_scores(output_dir):
     _save(fig, output_dir, "fig_fold_scores.png")
 
 
+def bias_variance(output_dir):
+    """
+    Q5: loss, bias and variance of the tree and the two forests, over all rows
+    and averaged over classes (bars: mean over outer folds, error bars: s.d.).
+    """
+
+    table = pd.read_csv(output_dir / "bias_variance.csv")
+    keys = [k for k in ["Tree", "RF-untuned", "RF"] if k in set(table["model"])]
+    parts = ["loss", "bias", "variance"]
+    width = 0.8 / len(parts)
+
+    fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.2), sharey=True, layout="constrained")
+    for ax, scope in zip(axes, ["all rows", "class average"]):
+        stats = table[table["scope"] == scope].groupby("model")[parts].agg(["mean", "std"])
+        for offset, part in enumerate(parts):
+            ax.bar(np.arange(len(keys)) + (offset - 1) * width, stats.loc[keys, (part, "mean")],
+                   width=width * 0.92, yerr=stats.loc[keys, (part, "std")], capsize=2,
+                   error_kw={"linewidth": 0.8}, color=DECOMPOSITION_COLOURS[part], label=part)
+        ax.set_xticks(range(len(keys)), [MODEL_NAMES[k].replace(", ", "\n").replace(" (", "\n(")
+                                         for k in keys])
+        ax.set_title(f"{scope} ({'like accuracy' if scope == 'all rows' else 'like macro F1'})",
+                     fontsize=9, color=INK)
+        ax.grid(axis="x", visible=False)
+    axes[0].set_ylabel("share of predictions")
+    axes[0].legend(loc="upper right")
+    _save(fig, output_dir, "fig_bias_variance.png")
+
+
 def plot_all(output_dir):
     label_conflicts(output_dir)
     tuning_features_and_weights(output_dir)
@@ -312,3 +342,4 @@ def plot_all(output_dir):
     per_class_f1(output_dir)
     confusion_matrices(output_dir)
     fold_scores(output_dir)
+    bias_variance(output_dir)

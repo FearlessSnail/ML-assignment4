@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import RobustScaler
 
-import data, diagnostics, experiment, forest_model, knn_model, plots, tree_model
+import data, diagnostics, experiment, forest_model, knn_model, mechanisms, plots, tree_model
 from progress import Progress, Timer
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -167,8 +167,27 @@ def main():
             f"of predictions", 1)
 
     experiment.finish(results, y, codes, names)
-    pairs = [("RF", "Tree"), ("RF", "kNN"), ("RF", "RF-untuned")]
+    pairs = [("RF", "Tree"), ("RF", "kNN"), ("RF-untuned", "Tree"), ("RF", "RF-untuned")]
     comparisons = [experiment.compare(results[a], results[b], a, b, len(y)) for a, b in pairs]
+
+    weights = len(y) / (len(codes) * y.value_counts())
+    votes = diagnostics.conflict_votes(
+        X, y, {key: result["predictions"] for key, result in results.items()}, weights)
+    votes.to_csv(out / "conflict_votes.csv", index=False)
+
+
+    log.rule("MECHANISMS")
+    log(f"Q5: bias and variance from {forest_model.VARIANCE_REPEATS} subsamples of "
+        f"{forest_model.VARIANCE_FRACTION:.0%} of each outer training fold", 1)
+    decomposed = [c for c in candidates if c.key in ("Tree", "RF-untuned", "RF")]
+    
+    bias_variance, bias_variance_classes = mechanisms.bias_variance(
+        decomposed, X, y, cv, forest_model.VARIANCE_REPEATS, forest_model.VARIANCE_FRACTION,
+        args.seed, log)
+    
+    bias_variance.to_csv(out / "bias_variance.csv", index=False)
+    bias_variance_classes.to_csv(out / "bias_variance_per_class.csv", index=False)
+
 
     log.rule("OUTPUT")
     with Timer(log, "writing tables and figures"):

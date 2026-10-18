@@ -85,3 +85,29 @@ def _overlap(frame, codes, names):
     np.fill_diagonal(shares, np.nan)
     return pd.DataFrame(shares, index=names, columns=names)
 
+
+def conflict_votes(X, y, predictions, class_weight):
+    """
+    Which label wins among rows that cannot be told apart, with and without
+    class weights, and what each model predicted for those rows.
+    """
+
+    codes, names = data.class_labels(y)
+    frame = pd.DataFrame({"key": _row_keys(X), "y": y.to_numpy()})
+    conflicting = (frame.groupby("key")["y"].transform("nunique") > 1).to_numpy()
+
+    groups = frame[conflicting].groupby(["key", "y"]).size().reset_index(name="n")
+    groups["weighted"] = groups["n"] * groups["y"].map(class_weight)
+    rows = frame[conflicting]
+
+    table = pd.DataFrame(index=pd.Index(names, name="class"))
+    table["conflicting_rows"] = rows["y"].value_counts().reindex(codes, fill_value=0).to_numpy()
+    for column, score in [("won_unweighted", "n"), ("won_balanced", "weighted")]:
+        winner = groups.sort_values([score, "y"]).drop_duplicates("key", keep="last")
+        winner = rows["key"].map(winner.set_index("key")["y"])
+        table[column] = winner.value_counts().reindex(codes, fill_value=0).to_numpy()
+    for key, prediction in predictions.items():
+        predicted = pd.Series(prediction[conflicting])
+        table[f"predicted_{key}"] = predicted.value_counts().reindex(codes, fill_value=0).to_numpy()
+    return table.reset_index()
+
